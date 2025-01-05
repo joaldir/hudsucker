@@ -5,8 +5,9 @@ use hyper::{
     body::{Body as HttpBody, Bytes, Frame, Incoming, SizeHint},
     Request, Response,
 };
-use std::{pin::Pin, task::Poll};
+use std::{pin::Pin, task::{Context, Poll}};
 
+/// Enum que contém diferentes tipos de dados para o corpo da resposta
 #[derive(Debug)]
 enum Internal {
     BoxBody(BoxBody<Bytes, Error>),
@@ -24,10 +25,12 @@ pub struct Body {
 }
 
 impl Body {
+    // Constrói um corpo vazio
     pub fn empty() -> Self {
         Self::from(Empty::new())
     }
 
+    // Constrói um corpo a partir de um Stream
     pub fn from_stream<S>(stream: S) -> Self
     where
         S: TryStream + Send + Sync + 'static,
@@ -37,9 +40,9 @@ impl Body {
         Self {
             inner: Internal::BoxBody(BoxBody::new(StreamBody::new(
                 stream
-                    .map_ok(Into::into)
-                    .map_ok(Frame::data)
-                    .map_err(Into::into),
+                    .map_ok(Into::into) // converte os itens em Bytes
+                    .map_ok(Frame::data) // converte os itens em Frames de dados
+                    .map_err(Into::into), // trata os erros
             ))),
         }
     }
@@ -49,9 +52,10 @@ impl HttpBody for Body {
     type Data = Bytes;
     type Error = Error;
 
+    // Polling para obter o próximo Frame
     fn poll_frame(
         mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         match &mut self.inner {
             Internal::BoxBody(body) => Pin::new(body).poll_frame(cx),
@@ -63,118 +67,75 @@ impl HttpBody for Body {
         }
     }
 
+    // Verifica se o stream chegou ao fim
     fn is_end_stream(&self) -> bool {
         match &self.inner {
             Internal::BoxBody(body) => body.is_end_stream(),
-            Internal::Collected(body) => body.is_end_stream(),
-            Internal::Empty(body) => body.is_end_stream(),
-            Internal::Full(body) => body.is_end_stream(),
-            Internal::Incoming(body) => body.is_end_stream(),
-            Internal::String(body) => body.is_end_stream(),
+            Internal::Collected(_) => true,
+            Internal::Empty(_) => true,
+            Internal::Full(_) => true,
+            Internal::Incoming(_) => false,
+            Internal::String(_) => true,
         }
     }
 
+    // Retorna o tamanho estimado do stream
     fn size_hint(&self) -> SizeHint {
         match &self.inner {
             Internal::BoxBody(body) => body.size_hint(),
-            Internal::Collected(body) => body.size_hint(),
-            Internal::Empty(body) => body.size_hint(),
-            Internal::Full(body) => body.size_hint(),
-            Internal::Incoming(body) => body.size_hint(),
-            Internal::String(body) => body.size_hint(),
-        }
-    }
-}
-
-impl From<BoxBody<Bytes, Error>> for Body {
-    fn from(value: BoxBody<Bytes, Error>) -> Self {
-        Self {
-            inner: Internal::BoxBody(value),
-        }
-    }
-}
-
-impl From<Collected<Bytes>> for Body {
-    fn from(value: Collected<Bytes>) -> Self {
-        Self {
-            inner: Internal::Collected(value),
-        }
-    }
-}
-
-impl From<Empty<Bytes>> for Body {
-    fn from(value: Empty<Bytes>) -> Self {
-        Self {
-            inner: Internal::Empty(value),
-        }
-    }
-}
-
-impl From<Full<Bytes>> for Body {
-    fn from(value: Full<Bytes>) -> Self {
-        Self {
-            inner: Internal::Full(value),
+            Internal::Collected(_) => SizeHint::default(),
+            Internal::Empty(_) => SizeHint::default(),
+            Internal::Full(_) => SizeHint::default(),
+            Internal::Incoming(_) => SizeHint::default(),
+            Internal::String(_) => SizeHint::default(),
         }
     }
 }
 
 impl From<Incoming> for Body {
-    fn from(value: Incoming) -> Self {
-        Self {
-            inner: Internal::Incoming(value),
+    fn from(inner: Incoming) -> Self {
+        Body {
+            inner: Internal::Incoming(inner),
         }
     }
 }
 
-impl<S> From<StreamBody<S>> for Body
-where
-    S: Stream<Item = Result<Frame<Bytes>, Error>> + Send + Sync + 'static,
-{
-    fn from(value: StreamBody<S>) -> Self {
-        Self {
-            inner: Internal::BoxBody(BoxBody::new(value)),
+impl From<Full<Bytes>> for Body {
+    fn from(inner: Full<Bytes>) -> Self {
+        Body {
+            inner: Internal::Full(inner),
+        }
+    }
+}
+
+impl From<Empty<Bytes>> for Body {
+    fn from(inner: Empty<Bytes>) -> Self {
+        Body {
+            inner: Internal::Empty(inner),
+        }
+    }
+}
+
+impl From<Collected<Bytes>> for Body {
+    fn from(inner: Collected<Bytes>) -> Self {
+        Body {
+            inner: Internal::Collected(inner),
         }
     }
 }
 
 impl From<String> for Body {
-    fn from(value: String) -> Self {
-        Self {
-            inner: Internal::String(value),
+    fn from(inner: String) -> Self {
+        Body {
+            inner: Internal::String(inner),
         }
     }
 }
 
-impl From<&'static str> for Body {
-    fn from(value: &'static str) -> Self {
-        Self {
-            inner: Internal::Full(Full::new(Bytes::from_static(value.as_bytes()))),
+impl From<Bytes> for Body {
+    fn from(inner: Bytes) -> Self {
+        Body {
+            inner: Internal::Full(Full::new(inner)),
         }
-    }
-}
-
-impl From<&'static [u8]> for Body {
-    fn from(value: &'static [u8]) -> Self {
-        Self {
-            inner: Internal::Full(Full::new(Bytes::from_static(value))),
-        }
-    }
-}
-
-impl<T> From<Request<T>> for Body
-where
-    T: Into<Body>,
-{
-    fn from(value: Request<T>) -> Self {
-        value.into_body().into()
-    }
-}
-
-impl<T> From<Response<T>> for Body
-where
-    T: Into<Body>,
-{
-    fn from(value: Response<T>) -> Self {
-        value.into_body().into()
     }
 }
