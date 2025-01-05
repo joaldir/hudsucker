@@ -7,7 +7,7 @@ use hyper::{
 };
 use std::{pin::Pin, task::{Context, Poll}};
 
-/// Enum que contém diferentes tipos de dados para o corpo da resposta
+/// Enum that holds different types of data for the response body
 #[derive(Debug)]
 enum Internal {
     BoxBody(BoxBody<Bytes, Error>),
@@ -25,12 +25,12 @@ pub struct Body {
 }
 
 impl Body {
-    // Constrói um corpo vazio
+    // Builds an empty body
     pub fn empty() -> Self {
         Self::from(Empty::new())
     }
 
-    // Constrói um corpo a partir de um Stream
+    // Builds a body from a Stream
     pub fn from_stream<S>(stream: S) -> Self
     where
         S: TryStream + Send + Sync + 'static,
@@ -40,10 +40,26 @@ impl Body {
         Self {
             inner: Internal::BoxBody(BoxBody::new(StreamBody::new(
                 stream
-                    .map_ok(Into::into) // converte os itens em Bytes
-                    .map_ok(Frame::data) // converte os itens em Frames de dados
-                    .map_err(Into::into), // trata os erros
+                    .map_ok(Into::into) // Converts items into Bytes
+                    .map_ok(Frame::data) // Converts items into data Frames
+                    .map_err(Into::into), // Handles errors
             ))),
+        }
+    }
+}
+
+// Implementing Stream trait for Body
+impl Stream for Body {
+    type Item = Result<Bytes, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match &mut self.get_mut().inner {
+            Internal::BoxBody(body) => Pin::new(body).poll_next(cx),
+            Internal::Collected(body) => Pin::new(body).poll_next(cx).map_err(Into::into),
+            Internal::Empty(body) => Pin::new(body).poll_next(cx).map_err(Into::into),
+            Internal::Full(body) => Pin::new(body).poll_next(cx).map_err(Into::into),
+            Internal::Incoming(body) => Pin::new(body).poll_next(cx).map_err(Into::into),
+            Internal::String(body) => Poll::Ready(Some(Ok(Bytes::from(body.clone())))),
         }
     }
 }
@@ -52,7 +68,7 @@ impl HttpBody for Body {
     type Data = Bytes;
     type Error = Error;
 
-    // Polling para obter o próximo Frame
+    // Polling to get the next Frame
     fn poll_frame(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -63,79 +79,30 @@ impl HttpBody for Body {
             Internal::Empty(body) => Pin::new(body).poll_frame(cx).map_err(|e| match e {}),
             Internal::Full(body) => Pin::new(body).poll_frame(cx).map_err(|e| match e {}),
             Internal::Incoming(body) => Pin::new(body).poll_frame(cx).map_err(Error::from),
-            Internal::String(body) => Pin::new(body).poll_frame(cx).map_err(|e| match e {}),
+            Internal::String(body) => Poll::Ready(Some(Ok(Frame::data(Bytes::from(body.clone()))))),
         }
     }
 
-    // Verifica se o stream chegou ao fim
+    // Check if the stream has ended
     fn is_end_stream(&self) -> bool {
         match &self.inner {
             Internal::BoxBody(body) => body.is_end_stream(),
-            Internal::Collected(_) => true,
-            Internal::Empty(_) => true,
-            Internal::Full(_) => true,
-            Internal::Incoming(_) => false,
+            Internal::Collected(body) => body.is_end_stream(),
+            Internal::Empty(body) => body.is_end_stream(),
+            Internal::Full(body) => body.is_end_stream(),
+            Internal::Incoming(body) => body.is_end_stream(),
             Internal::String(_) => true,
         }
     }
 
-    // Retorna o tamanho estimado do stream
     fn size_hint(&self) -> SizeHint {
         match &self.inner {
             Internal::BoxBody(body) => body.size_hint(),
-            Internal::Collected(_) => SizeHint::default(),
-            Internal::Empty(_) => SizeHint::default(),
-            Internal::Full(_) => SizeHint::default(),
-            Internal::Incoming(_) => SizeHint::default(),
+            Internal::Collected(body) => body.size_hint(),
+            Internal::Empty(body) => body.size_hint(),
+            Internal::Full(body) => body.size_hint(),
+            Internal::Incoming(body) => body.size_hint(),
             Internal::String(_) => SizeHint::default(),
-        }
-    }
-}
-
-impl From<Incoming> for Body {
-    fn from(inner: Incoming) -> Self {
-        Body {
-            inner: Internal::Incoming(inner),
-        }
-    }
-}
-
-impl From<Full<Bytes>> for Body {
-    fn from(inner: Full<Bytes>) -> Self {
-        Body {
-            inner: Internal::Full(inner),
-        }
-    }
-}
-
-impl From<Empty<Bytes>> for Body {
-    fn from(inner: Empty<Bytes>) -> Self {
-        Body {
-            inner: Internal::Empty(inner),
-        }
-    }
-}
-
-impl From<Collected<Bytes>> for Body {
-    fn from(inner: Collected<Bytes>) -> Self {
-        Body {
-            inner: Internal::Collected(inner),
-        }
-    }
-}
-
-impl From<String> for Body {
-    fn from(inner: String) -> Self {
-        Body {
-            inner: Internal::String(inner),
-        }
-    }
-}
-
-impl From<Bytes> for Body {
-    fn from(inner: Bytes) -> Self {
-        Body {
-            inner: Internal::Full(Full::new(inner)),
         }
     }
 }
